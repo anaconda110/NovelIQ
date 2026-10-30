@@ -20,13 +20,19 @@ def resume_inputs(monkeypatch):
         SimpleNamespace(chapter_id=1, sequence=1, text="短", display_index_label="一"),
         SimpleNamespace(chapter_id=2, sequence=2, text="长章原文。", display_index_label="二"),
     ]
-    storage = SimpleNamespace(reads=SimpleNamespace(
-        workflows_annotate_load_work_1=lambda _: chapters,
-        workflows_annotate_load_work_2=lambda chapter, _: [SimpleNamespace(
-            chapter_id=chapter.chapter_id, paragraph_id=chapter.chapter_id,
-            local_start_char=0, text=chapter.text,
-        )],
-    ))
+    storage = SimpleNamespace(
+        reads=SimpleNamespace(
+            workflows_annotate_load_work_1=lambda _: chapters,
+            workflows_annotate_load_work_2=lambda chapter, _: [
+                SimpleNamespace(
+                    chapter_id=chapter.chapter_id,
+                    paragraph_id=chapter.chapter_id,
+                    local_start_char=0,
+                    text=chapter.text,
+                )
+            ],
+        )
+    )
     monkeypatch.setattr(annotate, "fetch_annotation_role_records", lambda *_: list(states))
     return storage, states
 
@@ -80,3 +86,37 @@ async def test_resume_runs_only_missing_roles_and_never_discards_saved_chapter(r
     assert not any(message.payload.get("mode") == "chapter_reset" for message in recovery)
     agent.close.assert_called_once()
     audit.close.assert_awaited_once()
+
+
+def test_load_work_skips_empty_catalog_entries(monkeypatch):
+    chapters = [
+        SimpleNamespace(chapter_id=1, sequence=1, text=None, display_index_label="第一卷"),
+        SimpleNamespace(chapter_id=2, sequence=2, text="正文", display_index_label="第1章"),
+        SimpleNamespace(chapter_id=3, sequence=3, text="  \n\t", display_index_label="第2章"),
+    ]
+    storage = SimpleNamespace(
+        reads=SimpleNamespace(
+            workflows_annotate_load_work_1=lambda _: chapters,
+            workflows_annotate_load_work_2=lambda chapter, _: [
+                SimpleNamespace(
+                    chapter_id=chapter.chapter_id,
+                    paragraph_id=chapter.chapter_id,
+                    local_start_char=0,
+                    text=chapter.text,
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(annotate, "fetch_annotation_role_records", lambda *_: [])
+    monkeypatch.setattr(settings.models.annotation, "sub_chunk_max_chars", 100)
+
+    work, complete, saved = annotate._load_work(lambda: storage, "run")
+
+    assert complete == set()
+    assert saved == {}
+    assert [item.payload["chapter_id"] for item in work] == [2]
+    assert work[0].payload["chapter_orders"] == [
+        {"chapter_id": 1, "sequence": 1},
+        {"chapter_id": 2, "sequence": 2},
+        {"chapter_id": 3, "sequence": 3},
+    ]

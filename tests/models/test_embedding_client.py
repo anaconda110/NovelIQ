@@ -1,19 +1,67 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from openai import APIConnectionError, APITimeoutError, BadRequestError, InternalServerError
 
-from src.embedding import EmbeddingClient, EmbeddingServiceError
+from src.embedding import EmbeddingClient, EmbeddingServiceError, format_query_instruct
 
 
 def _build_httpx_response(status_code: int) -> httpx.Response:
     """测试里统一用这个 helper 生成最小可用响应，避免每个用例重复拼装 request/response。"""
     request = httpx.Request("POST", "http://embedding.test/v1/embeddings")
     return httpx.Response(status_code=status_code, request=request)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("BAAI/bge-m3", "林渡 顾霜"),
+        ("BGE-large-zh-v1.5", "林渡 顾霜"),
+        ("Qwen/Qwen3-Embedding-0.6B", format_query_instruct("林渡 顾霜")),
+        ("qwen3-embedding-8b", format_query_instruct("林渡 顾霜")),
+        ("text-embedding-3-small", "林渡 顾霜"),
+    ],
+)
+def test_format_query_uses_model_aware_rules(model: str, expected: str) -> None:
+    """BGE 和未知模型保留原文，Qwen Embedding 使用 instruct 前缀，且模型名大小写不敏感。"""
+    with patch("src.embedding.AsyncOpenAI"):
+        client = EmbeddingClient(
+            base_url="http://embedding.test/v1",
+            model=model,
+            api_key="test-key",
+            timeout_s=1.0,
+        )
+
+    assert client.format_query("林渡 顾霜") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["BAAI/bge-m3", "Qwen/Qwen3-Embedding-0.6B"])
+async def test_embed_texts_never_formats_documents(model: str) -> None:
+    """文档侧无论使用 BGE 还是 Qwen，都必须向嵌入服务发送原文。"""
+    with patch("src.embedding.AsyncOpenAI") as openai_mock:
+        mock_client = MagicMock()
+        openai_mock.return_value = mock_client
+        response = SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])],
+            usage=None,
+        )
+        create_mock = AsyncMock(return_value=response)
+        mock_client.embeddings.create = create_mock
+        client = EmbeddingClient(
+            base_url="http://embedding.test/v1",
+            model=model,
+            api_key="test-key",
+            timeout_s=1.0,
+        )
+
+        await client.embed_texts(["林渡与顾霜并肩迎敌。"])
+
+    assert create_mock.await_args.kwargs["input"] == ["林渡与顾霜并肩迎敌。"]
 
 
 @pytest.mark.asyncio

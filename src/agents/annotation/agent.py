@@ -220,18 +220,9 @@ class AnnotationAgent:
         receipt = message.payload
         invocation_id = new_id()
         payload = receipt.payload
-        paragraph_info = build_chapter_paragraph_info(payload["paragraphs"])
-        embedding = EmbeddingClient(novel_id=self.novel_id)
-        query = DatabaseAnnotationQueryService(
-            self.session_factory,
-            run_id=self.run_id,
-            current_chapter_id=payload["chapter_id"],
-            current_first_paragraph_id=min(paragraph_info.paragraph_ids),
-            current_last_paragraph_id=max(paragraph_info.paragraph_ids),
-            embedding_client=embedding,
-        )
         if not str(payload["chapter_text"]).strip():
             raise AnnotationInputError("标注 work 的章正文不能为空")
+        paragraph_info = build_chapter_paragraph_info(payload["paragraphs"])
         ledger = AnnotationToolLedger(
             run_scope=self.run_id,
             current_chapter_id=payload["chapter_id"],
@@ -265,7 +256,18 @@ class AnnotationAgent:
             self.case_pool.begin(author)
         recorder = AuditMessages(self.bus, self.run_id, receipt.work_id, invocation_id, payload["role"])
         audit_id: int | None = None
+        embedding: EmbeddingClient | None = None
         try:
+            semantic_config = settings.models.paragraph_embedding
+            embedding = EmbeddingClient(novel_id=self.novel_id) if semantic_config.semantic_enabled else None
+            query = DatabaseAnnotationQueryService(
+                self.session_factory,
+                run_id=self.run_id,
+                current_chapter_id=payload["chapter_id"],
+                current_first_paragraph_id=min(paragraph_info.paragraph_ids),
+                current_last_paragraph_id=max(paragraph_info.paragraph_ids),
+                embedding_client=embedding,
+            )
             task_config = load_task_config("annotation", model_id=payload["model_id"])
             model = build_chat_model("annotation", config=task_config)
             model_name = str(getattr(model, "model_name", None) or getattr(model, "model", "unknown"))
@@ -302,8 +304,15 @@ class AnnotationAgent:
 
             from src.event_bus.notifications import StreamEvent
 
-            await emit(StreamEvent(action="activity", stage="annotate", sub_stage=payload["role"],
-                chapter_id=payload["chapter_id"], activity="starting"))
+            await emit(
+                StreamEvent(
+                    action="activity",
+                    stage="annotate",
+                    sub_stage=payload["role"],
+                    chapter_id=payload["chapter_id"],
+                    activity="starting",
+                )
+            )
             await emit(
                 StreamEvent(
                     action="work_reset", stage="annotate", sub_stage=payload["role"], chapter_id=payload["chapter_id"]
@@ -448,20 +457,45 @@ class AnnotationAgent:
                     invocation_id=execution.invocation_id,
                 )
             )
-            await self.bus.deliver(Message(topic="analysis.activity", source=self.address,
-                target=f"activity:{self.run_id}", run_id=self.run_id, work_id=receipt.work_id,
-                invocation_id=invocation_id, payload=StreamEvent(action="activity", stage="annotate",
-                    activity="cancelled" if isinstance(exc, asyncio.CancelledError) else "error", message=str(exc))))
+            await self.bus.deliver(
+                Message(
+                    topic="analysis.activity",
+                    source=self.address,
+                    target=f"activity:{self.run_id}",
+                    run_id=self.run_id,
+                    work_id=receipt.work_id,
+                    invocation_id=invocation_id,
+                    payload=StreamEvent(
+                        action="activity",
+                        stage="annotate",
+                        activity="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                        message=str(exc),
+                    ),
+                )
+            )
             if isinstance(exc, asyncio.CancelledError):
                 raise
             from .errors import AnnotationRetryableError
+
             if not isinstance(exc, AnnotationRetryableError):
                 raise
-            await self.bus.deliver(Message(topic="analysis.activity", source=self.address,
-                target=f"activity:{self.run_id}", run_id=self.run_id, work_id=receipt.work_id,
-                invocation_id=invocation_id, payload=StreamEvent(action="activity", stage="annotate",
-                    activity="retry", message="等待模型池重新选举")))
+            await self.bus.deliver(
+                Message(
+                    topic="analysis.activity",
+                    source=self.address,
+                    target=f"activity:{self.run_id}",
+                    run_id=self.run_id,
+                    work_id=receipt.work_id,
+                    invocation_id=invocation_id,
+                    payload=StreamEvent(
+                        action="activity", stage="annotate", activity="retry", message="等待模型池重新选举"
+                    ),
+                )
+            )
             return {"outcome": "retry", "invocation_id": invocation_id, "error": str(exc)}
+        finally:
+            if embedding is not None:
+                await embedding.aclose()
 
     async def invoke_tool(self, execution: WorkExecution, tools: dict[str, Any], call: dict[str, Any]) -> str:
         """工具内存事务中无模型、原文 I/O、总线或数据库等待"""
@@ -520,10 +554,17 @@ class AnnotationAgent:
 
     async def save(self, message: Message) -> str:
         execution = self._execution(message)
-        await self.bus.deliver(Message(topic="analysis.activity", source=self.address,
-            target=f"activity:{self.run_id}", run_id=self.run_id, work_id=message.work_id,
-            invocation_id=message.invocation_id, payload=StreamEvent(action="activity", stage="annotate",
-                activity="saving")))
+        await self.bus.deliver(
+            Message(
+                topic="analysis.activity",
+                source=self.address,
+                target=f"activity:{self.run_id}",
+                run_id=self.run_id,
+                work_id=message.work_id,
+                invocation_id=message.invocation_id,
+                payload=StreamEvent(action="activity", stage="annotate", activity="saving"),
+            )
+        )
         return await asyncio.to_thread(self._save, execution, message.payload)
 
     def _save(self, execution: WorkExecution, storage: Storage) -> str:
@@ -547,9 +588,17 @@ class AnnotationAgent:
             self.case_pool.merge_committed(execution.committed_cases)
             self.case_pool.confirm(execution.invocation_id)
             execution.saved = True
-        await self.bus.deliver(Message(topic="analysis.activity", source=self.address,
-            target=f"activity:{self.run_id}", run_id=self.run_id, work_id=message.work_id,
-            invocation_id=message.invocation_id, payload=StreamEvent(action="work_saved", stage="annotate")))
+        await self.bus.deliver(
+            Message(
+                topic="analysis.activity",
+                source=self.address,
+                target=f"activity:{self.run_id}",
+                run_id=self.run_id,
+                work_id=message.work_id,
+                invocation_id=message.invocation_id,
+                payload=StreamEvent(action="work_saved", stage="annotate"),
+            )
+        )
 
     async def saved_progress(self, message: Message) -> None:
         """队列交付已确认章进度，由 Agent 向展示模块发送自身工作事实"""

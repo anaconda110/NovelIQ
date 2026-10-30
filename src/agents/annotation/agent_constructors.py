@@ -471,6 +471,14 @@ def build_agent_constructors(
         record = _record_of(agent, f"event/{el}")
         normalized_el = _normalize_el(el, record=record)
         existing = agent.event_keys().get(normalized_el)
+        if not isforeshadowing and confidence is not None:
+            raise _reject(
+                "confidence 仅适用于 isforeshadowing=True 的伏笔事件",
+                record=record,
+                field="confidence",
+                code="invalid_value",
+                expected="isforeshadowing=False 时省略 confidence",
+            )
         if isforeshadowing and confidence is None:
             raise _reject(
                 "isforeshadowing=True 时 confidence 必填",

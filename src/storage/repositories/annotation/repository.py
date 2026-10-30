@@ -44,7 +44,12 @@ class AnnotationRepository(BaseRepository[ChapterAnnotation]):
         return {int(row.chapter_id): int(row.sequence) for row in rows}
 
     def fetch_chapter_ids(self, run_id: str) -> set[int]:
-        return set(self.session.scalars(select(Chapter.chapter_id).where(Chapter.run_id == run_id).distinct()))
+        statement = select(Chapter.chapter_id).where(
+            Chapter.run_id == run_id,
+            Chapter.text.is_not(None),
+            func.length(func.trim(Chapter.text)) > 0,
+        )
+        return set(self.session.scalars(statement.distinct()))
 
     def run_execution_ids(self, run_id: str) -> Select:
         "本运行的真实执行：整轮 session 行与直接携带 run 的调用行"

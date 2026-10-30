@@ -137,6 +137,14 @@ class EventBindingState:
         event_id = self._node_id(ctx, tree_key, node_key)
         existing = next((item for item in self.bound_payloads.get("events", []) if item.node_id == event_id), None)
         paragraph_id = self._event_evidence_paragraph_id(ctx, evidence, record=record, existing=existing)
+        if not isforeshadowing and confidence is not None:
+            raise AnnotationStageRejection(
+                "confidence 仅适用于 isforeshadowing=true 的伏笔事件",
+                record=record,
+                field="confidence",
+                code="invalid_value",
+                expected="isforeshadowing=false 时省略 confidence",
+            )
         if isforeshadowing and confidence is None:
             raise AnnotationStageRejection(
                 "isforeshadowing=true 时必须提供 confidence",

@@ -1,4 +1,4 @@
-"""嵌入客户端：文本向量化（本地 llama-server，OpenAI 兼容接口）与查询侧的 instruct 前缀包装。"""
+"""嵌入客户端：文本向量化（本地 llama-server，OpenAI 兼容接口）与模型感知的查询格式化。"""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ EMBEDDING_RETRY_BASE_DELAY_S = 0.5
 EMBEDDING_CONNECTION_MAX_RETRIES = 3
 EMBEDDING_CONNECTION_RETRY_DELAY_S = 0.5
 
-# 查询侧嵌入按 Qwen3-Embedding 官方非对称检索配方加 instruct 前缀：
-# 检索文档侧（embed_texts）必须直发原文不加前缀，只有查询侧走 format_query_instruct；
-# 指令按官方建议写英文；换成对称嵌入模型时须移除前缀，否则相似度失真。
+# 查询格式由 EmbeddingClient.format_query() 按模型名选择：
+# Qwen3-Embedding 使用官方非对称检索 instruct 前缀；BGE 及其他模型使用原文。
+# 检索文档侧（embed_texts）始终直发原文，不调用任何查询格式化逻辑。
 QUERY_INSTRUCT_TASK = "Given a query about a novel, retrieve original novel passages relevant to the query"
 
 
@@ -114,6 +114,21 @@ class EmbeddingClient:
         if not self._model:
             raise ValueError("embedding model is required")
         return self._model
+
+    def format_query(self, query: str) -> str:
+        """按嵌入模型族格式化查询文本。
+
+        识别规则（模型名去除首尾空白并忽略大小写）：
+        - 名称包含 ``bge``：返回原文（BGE 使用对称检索格式）；
+        - 名称同时包含 ``qwen`` 和 ``embedding``：使用 Qwen instruct 前缀；
+        - 其他模型：保守返回原文，避免未知模型的相似度被前缀扭曲。
+        """
+        model_name = self._require_model_name().strip().casefold()
+        if "bge" in model_name:
+            return query
+        if "qwen" in model_name and "embedding" in model_name:
+            return format_query_instruct(query)
+        return query
 
     async def _connection_retry(self, error: APIConnectionError, attempt: int) -> None:
         """记录一次连接级重试并按指数退避等待；APITimeoutError 是其子类同走该路径"""

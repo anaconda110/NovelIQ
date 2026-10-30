@@ -54,13 +54,13 @@ def test_provider_request_metadata_keeps_thinking_and_excludes_credentials() -> 
         top_p=0.95,
         request_timeout=180,
         streaming=True,
-        model_kwargs={"extra_body": {"think": True}},
+        model_kwargs={"extra_body": {"thinking": {"type": "enabled"}}},
     )
     bound_model = SimpleNamespace(bound=chat_model, kwargs={"tools": [{"name": "write_metrics"}]})
 
     metadata = _provider_request_metadata(bound_model, attempt=1)
 
-    assert metadata["parameters"]["extra_body"] == {"think": True}
+    assert metadata["parameters"]["extra_body"] == {"thinking": {"type": "enabled"}}
     assert metadata["parameters"]["base_url"] == "https://provider.example/v1"
     assert metadata["parameters"]["tool_names"] == ["write_metrics"]
     assert len(metadata["parameters"]["tool_contract_fingerprint"]) == 64

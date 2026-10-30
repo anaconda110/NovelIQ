@@ -1,5 +1,8 @@
 """LangChain 模型桥接测试"""
 
+from src.config.input_config import TaskModelConfig
+from src.model_pool.llm import build_chat_model
+
 
 def test_reasoning_content_patch_preserves_delta_reasoning() -> None:
     """验证 langchain-openai 私有函数补丁生效——Qwen 系网关
@@ -23,3 +26,32 @@ def test_reasoning_content_patch_preserves_delta_reasoning() -> None:
     assert isinstance(chunk, AIMessageChunk)
     assert chunk.content == "正式输出"
     assert chunk.additional_kwargs.get("reasoning_content") == "思考中"
+
+
+def test_glm_thinking_disabled_is_sent_explicitly() -> None:
+    """GLM 关闭思考时必须显式传 disabled，不能依赖网关默认值。"""
+    model = build_chat_model(
+        config=TaskModelConfig(
+            base_url="http://provider.example/v1",
+            model="glm-5.2",
+            api_key="test-key",
+            thinking_enabled=False,
+        )
+    )
+
+    assert model.extra_body["thinking"] == {"type": "disabled"}
+
+
+def test_glm_thinking_enabled_uses_structured_field() -> None:
+    """GLM 开启思考时使用厂商支持的 thinking.type 结构。"""
+    model = build_chat_model(
+        config=TaskModelConfig(
+            base_url="http://provider.example/v1",
+            model="glm-5.2",
+            api_key="test-key",
+            thinking_enabled=True,
+        )
+    )
+
+    assert model.extra_body["thinking"] == {"type": "enabled"}
+    assert "think" not in model.extra_body

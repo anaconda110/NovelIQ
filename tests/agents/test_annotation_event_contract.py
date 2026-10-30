@@ -147,3 +147,13 @@ def test_confidence_and_original_paragraph_are_still_validated() -> None:
     with pytest.raises(AnnotationStageRejection, match="evidence"):
         _call(tools, _args(evidence=99))
     assert not ledger.bound_payloads.get("events")
+
+
+@pytest.mark.parametrize("program", [False, True])
+def test_non_foreshadow_event_rejects_confidence(program: bool) -> None:
+    ledger = _ledger()
+    with pytest.raises(AnnotationStageRejection) as excinfo:
+        _call(_tools(ledger, program=program), _args(isforeshadowing=False, confidence="high"))
+    assert excinfo.value.field == "confidence"
+    assert excinfo.value.code == "invalid_value"
+    assert not ledger.bound_payloads.get("events")

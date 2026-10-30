@@ -30,18 +30,21 @@ def _load_work(
     session = session_factory()
     chapters = session.reads.workflows_annotate_load_work_1(run_id)
     states = fetch_annotation_role_records(session, run_id)
-    complete = completed_chapters(states)
+    annotatable_ids = {
+        int(chapter.chapter_id) for chapter in chapters if chapter.text is not None and chapter.text.strip()
+    }
+    complete = completed_chapters(states) & annotatable_ids
     saved: dict[int, set[str]] = {}
     for record in states:
-        if record.state == "saved":
+        if record.state == "saved" and int(record.chapter_id) in annotatable_ids:
             saved.setdefault(int(record.chapter_id), set()).add(str(record.role))
     orders = [{"chapter_id": chapter.chapter_id, "sequence": chapter.sequence} for chapter in chapters]
     work: list[WorkReceipt] = []
     for chapter in chapters:
+        if chapter.chapter_id not in annotatable_ids:
+            continue
         if chapter.chapter_id in complete:
             continue
-        if not chapter.text:
-            raise ValueError(f"chapter_id={chapter.chapter_id} 缺少实际章输入")
         rows = session.reads.workflows_annotate_load_work_2(chapter, run_id)
         paragraphs = [
             SimpleNamespace(
@@ -167,8 +170,17 @@ async def run_annotate(
             states = await asyncio.to_thread(fetch_annotation_role_records, progress_session, run_id)
             completed = completed_chapters(states)
             if emitter:
-                await emitter(StreamEvent(action="progress", stage="annotate", sub_stage="confirmed_chapters",
-                    current=len(completed), total=total, unit="章", message="必需角色正式保存确认"))
+                await emitter(
+                    StreamEvent(
+                        action="progress",
+                        stage="annotate",
+                        sub_stage="confirmed_chapters",
+                        current=len(completed),
+                        total=total,
+                        unit="章",
+                        message="必需角色正式保存确认",
+                    )
+                )
             chapter_id = receipt.payload["chapter_id"]
             if chapter_id in completed and chapter_id not in retained:
                 await consolidate(chapter_id)

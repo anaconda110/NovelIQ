@@ -26,6 +26,7 @@ from src.storage.repositories.paragraph import (
     insert_paragraph_embeddings,
 )
 from src.storage.vector_schema import ensure_paragraph_embeddings_schema
+from src.text_processing.chapters.models import ChapterData, ChapterLevel
 from src.text_processing.models import Chunk
 from src.text_processing.paragraphs import split_chunk_paragraphs
 from tests.support.analysis_factories import insert_test_novel
@@ -276,6 +277,40 @@ class TestStageCompleteChecks:
             persist_chapter_annotation(db_session, run_id=run_id, chapter_id=chapter_id)
         assert is_annotate_complete(storage_for(ann_repo.session), run_id)
 
+    def test_is_annotate_complete_ignores_empty_catalog_chapter(self, db_session):
+        """空目录条目保留在章节结构中，但不要求标注正文"""
+        run_repo = RunRepository(db_session)
+        novel_id = new_id()
+        insert_test_novel(novel_id, session=db_session)
+        run_id = run_repo.create_run(novel_id=novel_id)
+        chapter_repo = ChapterRepository(db_session)
+        ann_repo = AnnotationRepository(db_session)
+        chapter_repo.insert_chapters(
+            run_id,
+            [
+                ChapterData(
+                    chapter_id=chapter_id,
+                    sequence=chapter_id,
+                    level=ChapterLevel.CHAPTER,
+                    title=f"第{chapter_id}章",
+                    display_title=f"第{chapter_id}章",
+                    display_index_label=None,
+                    number=chapter_id,
+                    title_start_char=0,
+                    start_char=0,
+                    end_char=0,
+                )
+                for chapter_id in (1, 2, 3)
+            ],
+        )
+        chunks = [_create_chunks(3)[0], _create_chunks(3)[2]]
+        chapter_repo.insert_chapter_texts(run_id, chunks)
+        _insert_paragraphs(db_session, run_id, chunks)
+        persist_chapter_annotation(db_session, run_id=run_id, chapter_id=1)
+        persist_chapter_annotation(db_session, run_id=run_id, chapter_id=3)
+
+        assert is_annotate_complete(storage_for(ann_repo.session), run_id)
+
     def test_is_aggregate_complete_no_data(self, db_session):
         """无emotion_curve和rhythm_curve时aggregate未完成"""
         run_repo = RunRepository(db_session)
@@ -335,6 +370,7 @@ class TestStageCompleteChecks:
         _insert_paragraphs(db_session, run_id, chunks)
         paragraph_repo = ParagraphRepository(db_session)
         from tests.support.storage_fixtures import save_topic_artifact
+
         save_topic_artifact(run_id, 1)
         paragraph_repo.insert_topic_model_run(
             run_id,

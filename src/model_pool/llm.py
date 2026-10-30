@@ -58,19 +58,23 @@ def build_chat_model(
     根据任务类型构建 ChatOpenAI 实例
 
     - 复用项目统一的模型配置（base_url / model / api_key / temperature）
-    - thinking 启用时透传 `extra_body={"think": True}`（Qwen 系 OpenAI 兼容服务）
+    - GLM 系模型显式透传 `thinking.type`：关闭时不能省略，否则网关默认开启
+      长思考；Qwen 系模型在思考启用时继续透传 `think: true`
     - 构建时安装 reasoning_content 流式补丁（幂等）
     """
     _install_reasoning_content_patch()
     cfg = config or load_task_config(task_type)
     cfg.validate()
 
-    extra_body: dict[str, object] | None = None
-    if cfg.thinking_enabled:
-        extra_body = {"think": True}
+    extra_body: dict[str, object] = {}
+    if (cfg.model or "").lower().startswith("glm-"):
+        extra_body["thinking"] = {"type": "enabled" if cfg.thinking_enabled else "disabled"}
+    elif cfg.thinking_enabled:
+        # Qwen/DashScope 兼容网关的旧协议；GLM 不接受该字段。
+        extra_body["think"] = True
     # 流式必须显式开 include_usage：否则网关不下发 usage 块，token 记账退化成本地估算；
     # 聚合器（stream_aggregator）把末 chunk 的 usage_metadata 装回响应供其上报
-    extra_body = {**(extra_body or {}), "stream_options": {"include_usage": True}}
+    extra_body["stream_options"] = {"include_usage": True}
 
     # LLM 调用固定开启流式；断流重试与计时统一由 stream.py 按 total_attempts 处理
     return ChatOpenAI(

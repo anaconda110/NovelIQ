@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.storage.models import Chapter, Paragraph
 
 
 def workflows_annotate_load_work_1(_session, run_id):
     return (
-        _session.execute(select(Chapter).where(Chapter.run_id == run_id).order_by(Chapter.sequence, Chapter.chapter_id))
+        _session.execute(
+            select(Chapter)
+            .where(
+                Chapter.run_id == run_id,
+                Chapter.text.is_not(None),
+                func.length(func.trim(Chapter.text)) > 0,
+            )
+            .order_by(Chapter.sequence, Chapter.chapter_id)
+        )
         .scalars()
         .all()
     )

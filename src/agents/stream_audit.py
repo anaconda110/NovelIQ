@@ -101,7 +101,12 @@ def _provider_request_metadata(model: Any, *, attempt: int) -> dict[str, Any]:
     binding_kwargs = getattr(model, "kwargs", None) or {}
     tools = binding_kwargs.get("tools") if isinstance(binding_kwargs, Mapping) else None
     tool_names, tool_contract_fingerprint = _safe_tool_contract(tools)
-    thinking = bool(extra_body.get("think")) if isinstance(extra_body, Mapping) else False
+    provider_controls: dict[str, Any] = {}
+    if isinstance(extra_body, Mapping):
+        # 只记录会改变模型行为的公开控制字段，避免把任意 extra_body 内容写入审计。
+        for key in ("think", "thinking", "enable_thinking", "reasoning_effort"):
+            if key in extra_body:
+                provider_controls[key] = _sanitize_audit_value(extra_body[key])
     parameters: dict[str, Any] = {
         "model": str(getattr(bound_model, "model_name", None) or getattr(bound_model, "model", "") or "unknown"),
         "base_url": _safe_base_url(
@@ -111,7 +116,7 @@ def _provider_request_metadata(model: Any, *, attempt: int) -> dict[str, Any]:
         "top_p": getattr(bound_model, "top_p", None),
         "timeout_s": getattr(bound_model, "request_timeout", None) or getattr(bound_model, "timeout", None),
         "streaming": bool(getattr(bound_model, "streaming", True)),
-        "extra_body": {"think": thinking},
+        "extra_body": provider_controls,
         "tool_names": tool_names,
         "tool_contract_fingerprint": tool_contract_fingerprint,
         "tool_schema_tokens": count_tokens(json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str))

@@ -9,7 +9,7 @@ import pytest
 
 from src.agents.annotation.errors import AnnotationDependencyError
 from src.agents.annotation.text_search import TextSearchService, extract_query_terms
-from src.embedding import format_query_instruct
+from src.embedding import EmbeddingClient, format_query_instruct
 from src.storage.repositories.paragraph.embedding_ops import SimilarParagraphRow
 from src.storage.repositories.paragraph_repository import ParagraphRepository
 from src.text_processing.models import Chunk
@@ -30,6 +30,14 @@ def _insert_paragraphs(db_session, run_id: str, texts: list[str]) -> None:
     spans = [replace(span, token_count=len(tokenize(span.text))) for span in spans]
     ParagraphRepository(db_session).insert_paragraphs(run_id, spans)
     db_session.commit()
+
+
+def _fake_embedding_client() -> MagicMock:
+    """构造同步格式化、异步嵌入的替身，避免 AsyncMock 把同步方法变成未等待协程。"""
+    client = MagicMock()
+    client.format_query.side_effect = lambda query: query
+    client.get_embedding = AsyncMock(return_value=[0.1, 0.2])
+    return client
 
 
 def test_extract_query_terms_keeps_short_whole_query() -> None:
@@ -133,7 +141,7 @@ async def test_search_merges_keyword_and_semantic_scores_per_paragraph(db_sessio
     )
     _insert_paragraphs(db_session, run_id, ["林渡与顾霜并肩迎敌，携手入城。\n顾霜独自离去。"])
     service = TextSearchService(storage_for(db_session), run_id=run_id, semantic_enabled=True)
-    service._embedding_client = AsyncMock()
+    service._embedding_client = _fake_embedding_client()
     semantic_rows = [
         SimilarParagraphRow(
             paragraph_id=0,
@@ -174,7 +182,7 @@ async def test_search_ranks_keyword_hits_before_semantic_only_rows(db_session) -
     )
     _insert_paragraphs(db_session, run_id, ["林渡与顾霜并肩迎敌。\n顾霜独自离去。\n无关段落。"])
     service = TextSearchService(storage_for(db_session), run_id=run_id, semantic_enabled=True)
-    service._embedding_client = AsyncMock()
+    service._embedding_client = _fake_embedding_client()
     semantic_rows = [
         SimilarParagraphRow(
             paragraph_id=2,
@@ -199,26 +207,43 @@ async def test_search_ranks_keyword_hits_before_semantic_only_rows(db_session) -
 
 
 @pytest.mark.asyncio
-async def test_search_wraps_query_with_instruct_prefix(db_session) -> None:
-    """Qwen3-Embedding 非对称检索配方：查询侧嵌入带 instruct 前缀，文档侧不带"""
+@pytest.mark.parametrize(
+    ("model", "expected_query"),
+    [
+        ("BAAI/bge-m3", "林渡 顾霜"),
+        ("Qwen/Qwen3-Embedding-0.6B", format_query_instruct("林渡 顾霜")),
+    ],
+)
+async def test_search_formats_query_by_embedding_model(db_session, model: str, expected_query: str) -> None:
+    """查询侧按模型选择格式，且 TextSearch 不需要直接访问 EmbeddingClient 的私有模型名。"""
     _novel_id, run_id = create_run_with_chunks(
         db_session,
         texts=["林渡与顾霜并肩迎敌，携手入城。\n顾霜独自离去。"],
-        title="查询instruct前缀",
+        title=f"查询格式化-{model}",
     )
     _insert_paragraphs(db_session, run_id, ["林渡与顾霜并肩迎敌，携手入城。\n顾霜独自离去。"])
-    service = TextSearchService(storage_for(db_session), run_id=run_id, semantic_enabled=True)
-    service._embedding_client = AsyncMock()
+    with patch("src.embedding.AsyncOpenAI"):
+        embedding_client = EmbeddingClient(
+            base_url="http://embedding.test/v1",
+            model=model,
+            api_key="test-key",
+            timeout_s=1.0,
+        )
+    embedding_client.get_embedding = AsyncMock(return_value=[0.1, 0.2])
+    service = TextSearchService(
+        storage_for(db_session),
+        run_id=run_id,
+        embedding_client=embedding_client,
+        semantic_enabled=True,
+    )
     with patch(
         "src.storage.access.ParagraphAccess.search_similar_paragraphs",
         return_value=[],
     ):
         await service.search("林渡 顾霜")
 
-    sent_text = service._embedding_client.get_embedding.await_args.args[0]
-    assert sent_text == format_query_instruct("林渡 顾霜")
-    assert sent_text.startswith("Instruct: ")
-    assert sent_text.endswith("\nQuery:林渡 顾霜")
+    sent_text = embedding_client.get_embedding.await_args.args[0]
+    assert sent_text == expected_query
 
 
 @pytest.mark.asyncio

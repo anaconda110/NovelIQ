@@ -40,6 +40,13 @@ class EventWriter:
             smap.validate_event_range(
                 session, self.run_id, content["from_chapter_id"], content["to_chapter_id"], frozen.chapter_order
             )
+            is_foreshadowing_root = bool(content["is_foreshadow_setup"])
+            payoff_likelihood = content["payoff_likelihood"]
+            if not is_foreshadowing_root and payoff_likelihood is not None:
+                raise ValueError(
+                    f"非伏笔根事件不得携带 payoff_likelihood: event_id={event_id}, "
+                    f"payoff_likelihood={payoff_likelihood!r}"
+                )
             session.add(
                 CompleteEvent(
                     event_id=event_id,
@@ -55,8 +62,8 @@ class EventWriter:
                     event_type=content["event_type"],
                     status=content["status"],
                     progress=content["progress"],
-                    is_foreshadowing_root=bool(content["is_foreshadow_setup"]),
-                    payoff_likelihood=content["payoff_likelihood"],
+                    is_foreshadowing_root=is_foreshadowing_root,
+                    payoff_likelihood=payoff_likelihood,
                 )
             )
             session.flush()

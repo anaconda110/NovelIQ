@@ -290,6 +290,38 @@ def test_action_save_rejects_future_endpoints(db_session, future_endpoint):
         EventWriter(run).save_work(db_session, frozen, record_id)
 
 
+def test_event_save_rejects_confidence_on_non_foreshadowing_event(db_session):
+    novel, run = create_run_with_chunks(db_session, texts=["张元清取回伏魔杵"], chapter_ids=[1])
+    record_id, annotation_execution = add_annotation_source(db_session, run, 1, role="event")
+    paragraph = first_paragraph(db_session, run, chapter_id=1)
+    event_id = new_id()
+    content = {
+        "node_id": event_id,
+        "from_chapter_id": 1,
+        "to_chapter_id": 1,
+        "title": "取回伏魔杵",
+        "problem": "能否取回伏魔杵",
+        "summary": "张元清取回伏魔杵",
+        "event_type": "主线推进",
+        "status": "resolved",
+        "progress": "取回伏魔杵",
+        "is_foreshadow_setup": False,
+        "payoff_likelihood": "high",
+        "evidence_paragraph_id": int(paragraph.paragraph_id),
+        "participants": [],
+    }
+    frozen = EventContribution(
+        run,
+        annotation_execution,
+        1,
+        (EvidenceParagraph(1, int(paragraph.paragraph_id), paragraph.text, 0, len(paragraph.text)),),
+        json.dumps({"nodes": {event_id: {"content": content}}, "connections": {}, "actions": {}}),
+        "{}",
+    )
+    with pytest.raises(ValueError, match="非伏笔根事件不得携带 payoff_likelihood"):
+        EventWriter(run).save_work(db_session, frozen, record_id)
+
+
 def test_action_save_accepts_earlier_saved_work_endpoints(db_session):
     """跨章回收/强化：端点可指向更早章已保存 work 的声明（0.2.x 语义， 修回归）
 

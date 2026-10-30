@@ -156,6 +156,15 @@ class _FinishGraph:
         return {"error": None}
 
 
+class _EmbeddingClient:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 def _agent(bus: EventBus, sessions: Any, monkeypatch: Any) -> AnnotationAgent:
     from src.event_bus.activity import ActivityRelay
 
@@ -170,7 +179,7 @@ def _agent(bus: EventBus, sessions: Any, monkeypatch: Any) -> AnnotationAgent:
         "src.model_pool.configuration.load_task_config",
         lambda *args, **kwargs: SimpleNamespace(context_window_tokens=128000),
     )
-    monkeypatch.setattr("src.embedding.EmbeddingClient", lambda **kwargs: object())
+    monkeypatch.setattr("src.embedding.EmbeddingClient", _EmbeddingClient)
     monkeypatch.setattr(
         "src.agents.annotation.queries.DatabaseAnnotationQueryService", lambda *args, **kwargs: object()
     )
@@ -305,6 +314,61 @@ async def test_provider_timeout_returns_retry_with_own_contributions_removed(mon
     )
     assert result["outcome"] == "retry" and result["invocation_id"]
     assert not agent.fact_graph.contributions and not agent.event_trees.nodes and not agent.case_pool.cases
+
+
+@pytest.mark.asyncio
+async def test_annotation_semantic_disabled_does_not_create_embedding_client(monkeypatch: Any) -> None:
+    """语义检索关闭时，标注只依赖关键词查询，不能要求嵌入密钥或客户端。"""
+    bus = EventBus()
+    agent = _agent(bus, _MemorySessions(), monkeypatch)
+    for topic, address in (("queue.started", "queue:run"), ("audit.barrier", "audit:run")):
+        bus.handle(topic, address, _ignore)
+    monkeypatch.setattr(settings.models.paragraph_embedding, "semantic_enabled", False)
+
+    def unexpected_embedding(**kwargs: Any) -> Any:
+        raise AssertionError("semantic_enabled=false 时不应创建 EmbeddingClient")
+
+    monkeypatch.setattr("src.embedding.EmbeddingClient", unexpected_embedding)
+    query_kwargs: dict[str, Any] = {}
+
+    def query_service(*args: Any, **kwargs: Any) -> object:
+        query_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("src.agents.annotation.queries.DatabaseAnnotationQueryService", query_service)
+    result = await agent.execute(
+        Message("agent.execute", "queue:run", "agent:run", "run", work_id="work", payload=_receipt())
+    )
+
+    assert result["outcome"] == "completed"
+    assert query_kwargs["embedding_client"] is None
+
+
+@pytest.mark.asyncio
+async def test_annotation_embedding_client_closes_on_failure(monkeypatch: Any) -> None:
+    """启用的嵌入客户端必须覆盖异常路径释放 HTTP 连接。"""
+    bus = EventBus()
+    agent = _agent(bus, _MemorySessions(), monkeypatch)
+    for topic, address in (("queue.started", "queue:run"), ("audit.barrier", "audit:run")):
+        bus.handle(topic, address, _ignore)
+    monkeypatch.setattr(settings.models.paragraph_embedding, "semantic_enabled", True)
+    client = _EmbeddingClient()
+    monkeypatch.setattr("src.embedding.EmbeddingClient", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "src.agents.annotation.queries.DatabaseAnnotationQueryService", lambda *args, **kwargs: object()
+    )
+
+    class FailedGraph:
+        async def ainvoke(self, state: Any, config: Any = None) -> Any:
+            raise RuntimeError("graph failed")
+
+    monkeypatch.setattr("src.agents.annotation.agent.build_agent_graph", lambda *args, **kwargs: FailedGraph())
+    with pytest.raises(RuntimeError, match="graph failed"):
+        await agent.execute(
+            Message("agent.execute", "queue:run", "agent:run", "run", work_id="work", payload=_receipt())
+        )
+
+    assert client.closed
 
 
 @pytest.mark.asyncio
